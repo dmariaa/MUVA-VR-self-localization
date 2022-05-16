@@ -40,7 +40,7 @@ def get_corners(images: list) -> list:
             cv2.cornerSubPix(gray_image, chessboard_corners, window_size, zero_zone, criteria)
             corners[i] = chessboard_corners
         else:
-            print(f"Could not find corners in {filenames[i]}")
+            print(f"Could not find corners for image {i}")
 
     return corners
 
@@ -86,6 +86,14 @@ def get_camera_calibration():
     cb_points = get_chessboard_points((9, 6), 24, 24)
 
     rms, intrinsics, dist_coeffs, rvecs, tvecs = calibrate_camera(corners, cb_points, images[0].shape[:-1])
+
+    # Just to obtain some sample pcitures
+    # for i in range(5):
+    #     im = draw_corners(images[i], corners[i])
+    #     plt.imshow(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))
+    #     plt.tight_layout()
+    #     plt.show()
+
     return rms, intrinsics, dist_coeffs, rvecs, tvecs
 
 
@@ -93,9 +101,4 @@ if __name__ == "__main__":
     rms, intrinsics, dist_coeffs, rvecs, tvecs = get_camera_calibration()
     print(intrinsics)
     print(rms)
-
-#    for i in range(10):
-#        im = draw_corners(images[i], corners[i])
-#        plt.imshow(im)
-#        plt.show()
 
