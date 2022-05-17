@@ -1,62 +1,16 @@
-import cv2.cv2 as cv2
-import numpy as np
-import matplotlib
+from typing import Union
 
-matplotlib.use('Qt5Agg')
+import cv2.cv2 as cv2
+
+import matplotlib
 import matplotlib.pyplot as plt
 from pupil_apriltags import Detector, Detection
 
+from video_player import VideoPlayer
 from calibration import get_camera_calibration
+from tools import *
 
-colors = [
-    (255, 255, 0),
-    (0, 0, 255),
-    (0, 255, 0),
-    (255, 0, 0),
-    (0, 255, 255)
-]
-
-ref_marker_points = np.array([
-    [-1, 1, 0, 1],
-    [1, 1, 0, 1],
-    [1, -1, 0, 1],
-    [-1, -1, 0, 1],
-    [0, 0, 0, 1]
-], dtype=float)
-
-ref_marker_points2 = np.array([
-    [-1, 1, 0],
-    [1, 1, 0],
-    [1, -1, 0],
-    [-1, -1, 0],
-    [0, 0, 0]
-], dtype=float)
-
-ref_marker_axis = np.array([
-    [0, 0, 0, 1],
-    [1, 0, 0, 1],
-    [0, 1, 0, 1],
-    [0, 0, 1, 1]
-], dtype=float)
-
-margins = np.array([
-    [-1, -1],
-    [1, -1],
-    [1, 1],
-    [-1, 1]
-]) * 20
-
-center_point = np.array([0, 0, 0, 1])
-
-# tags matrixes
-# 0: 776, 199
-# 1: 192, 200
-# 2: 484, 689
-tags_to_world = {
-    0: np.append(np.append(np.identity(3), [[7.76], [1.99], [0]], axis=1), [[0, 0, 0, 1]], axis=0),
-    1: np.append(np.append(np.identity(3), [[1.92], [2.00], [0]], axis=1), [[0, 0, 0, 1]], axis=0),
-    2: np.append(np.append(np.identity(3), [[4.84], [6.89], [0]], axis=1), [[0, 0, 0, 1]], axis=0)
-}
+matplotlib.use('Qt5Agg')
 
 
 def calculate_corners(K: np.ndarray):
@@ -99,15 +53,7 @@ def show_tag(frame: np.ndarray, tag: Detection, k: np.ndarray, r: np.ndarray, t:
                          color=colors[i],
                          thickness=2)
 
-    center = k @ (r @ [0, 0, 0] + t.T).T
-    center = center[:-1] / center[-1]
-
-    for i in [1, 2, 3]:
-        axis = ref_marker_axis[i]
-        p = k @ (r @ (axis[:-1] * .5) + t.T).T
-        p = p[:-1] / p[-1]
-        frame = cv2.line(frame, pt1=center.flatten().astype(int), pt2=p.flatten().astype(int),
-                         color=colors[i], thickness=8)
+    frame = cv2.drawFrameAxes(frame, k, dist_coeffs, r, t, 0.75, 10)
 
     return frame
 
@@ -119,14 +65,15 @@ def detect_tags(frame: np.ndarray):
         for tag in tags:
             image_points = np.append(tag.corners, [tag.center], axis=0)
             res, rvec_tag, tvec_tag = cv2.solvePnP(ref_marker_points2, image_points, intrinsics, dist_coeffs,
-                                                    flags=cv2.SOLVEPNP_IPPE)
+                                                   flags=cv2.SOLVEPNP_IPPE)
+
             rvec_tag, tvec_tag = cv2.solvePnPRefineLM(ref_marker_points2, image_points, intrinsics, dist_coeffs, rvec_tag, tvec_tag)
 
             rvec_tag = cv2.Rodrigues(rvec_tag)[0]
             yield tag, [rvec_tag, tvec_tag]
 
 
-def cam_self_projection(tag_mats: list):
+def cam_self_projection(tags: list, tag_mats: list):
     '''
     Calculates camera self projection for multiple tags
     :param tag_mats:
@@ -137,18 +84,17 @@ def cam_self_projection(tag_mats: list):
     cam_center = np.zeros(3)
     corners = np.zeros((4, 3))
 
-    for tag_mat in tag_mats:
-        RT = np.append(np.append(-tag_mat[0], tag_mat[1], axis=1), [[0, 0, 0, 1]], axis=0)
-        RT = np.linalg.inv(RT)
+    for i, tag_mat in enumerate(tag_mats):
+        r, t = tag_mat
+        RT_inv = np.append(np.append(r.T, -r.T @ t, axis=1), [[0, 0, 0, 1]], axis=0)
+        tag_matrix = tags_to_world[tags[i].tag_id]
 
-        tag_matrix = tags_to_world[tag.tag_id]
-        center = tag_matrix @ RT @ center_point
-        center = center[:-1] / center[-1]
-        cam_center += center
+        p = tag_matrix @ RT_inv @ [[0], [0], [0], [1]]
+        cam_center += (p[:-1] / p[-1]).flatten()
 
-        c = (RT @ corner_points.T).T
-        c = c[:, :-1] / c[:, -1][:, np.newaxis]
-        corners += c
+        c = tag_matrix @ RT_inv @ corner_points.T
+        c = c[:-1, :] / c[-1, :]
+        corners += c.T
 
     cam_center /= len(tag_mats)
     corners /= len(tag_mats)
@@ -161,13 +107,20 @@ class CameraPlotter:
         self.K = K
 
         self.cam_size = cam_size
-        self.figure = plt.figure(figsize=(9.6, 4.6), tight_layout={'rect': [0, 0, 1, 1]})
+        self.figure = plt.figure(figsize=(6.4, 6.4))
 
-        self.ax_image = plt.subplot2grid((1, 3), (0, 0), colspan=2)
-        self.ax_image.set_axis_off()
+        # self.ax_image = plt.subplot2grid((1, 3), (0, 0), colspan=2)
+        # self.ax_image.set_axis_off()
 
-        self.ax = plt.subplot2grid((1, 3), (0, 2), projection='3d')
-        # self._draw_template()
+        self.view_azimut = -63
+        self.view_elevation = -157
+        self.ax = plt.subplot2grid((1, 1), (0, 0), projection='3d')
+        self.ax.set_xlim3d([-1., 10.])
+        self.ax.set_ylim3d([-1., 10.])
+        self.ax.set_zlim3d([-10., 1.])
+        self.ax.view_init(elev=self.view_elevation, azim=self.view_azimut)
+
+        self._draw_world_axis()
 
         self.line, = self.ax.plot3D([], [], [])
 
@@ -175,6 +128,11 @@ class CameraPlotter:
         plt.pause(0.001)
 
         self.center_points = np.empty((0, 3), dtype=float)
+
+    def _draw_world_axis(self):
+        self.ax.plot3D([0, 1], [0, 0], [0, 0], c='red')
+        self.ax.plot3D([0, 0], [0, 1], [0, 0], c='green')
+        self.ax.plot3D([0, 0], [0, 0], [0, 1], c='blue')
 
     def _draw_template(self, tag_matrix):
         t = tag_matrix @ ref_marker_points.T
@@ -201,9 +159,11 @@ class CameraPlotter:
 
     def draw(self, cam_center: np.ndarray, corners: np.ndarray, tags):
         self.ax.clear()
-        self.ax.set_xlim3d([0., 10.])
-        self.ax.set_ylim3d([0., 10.])
-        self.ax.set_zlim3d([0., 10.])
+        self.ax.set_xlim3d([-1., 10.])
+        self.ax.set_ylim3d([-1., 10.])
+        self.ax.set_zlim3d([-10., 1.])
+
+        self._draw_world_axis()
 
         for tag in tags:
             self._draw_template(tags_to_world[tag.tag_id])
@@ -211,35 +171,19 @@ class CameraPlotter:
         self._draw_camera(cam_center, corners)
 
 
-at_detector = Detector(families='tag36h11',
-                       nthreads=1,
-                       quad_decimate=1.0,
-                       quad_sigma=0.0,
-                       refine_edges=1,
-                       decode_sharpening=0.25,
-                       debug=0)
+class FrameProcessor(VideoPlayer):
+    def __init__(self, intrinsics: np.ndarray, dist_coeffs: np.ndarray, **kwargs):
+        super(FrameProcessor, self).__init__(**kwargs)
 
-print("Calibrating camera...")
-rms, intrinsics, dist_coeffs, rvecs, tvecs = get_camera_calibration()
-print("Camera calibration done!!!")
+        self.K = intrinsics
+        self.dist_coeffs = dist_coeffs
+        self.camera_plotter = CameraPlotter(intrinsics)
 
-# corners needed to show camera cone
-corner_points = calculate_corners(intrinsics)
-
-# camera plotter
-camera_plotter = CameraPlotter(intrinsics)
-
-capture = cv2.VideoCapture(0)
-save_frame = False
-show_plot3d = True
-plot_freq = 1
-
-try:
-    i = 0
-
-    while capture.isOpened():
-        ret, frame = capture.read()
+    def _process_frame(self, frame: np.ndarray) -> (Union[np.ndarray, None], bool):
+        # frame = cv2.resize(frame, (640, 480))
         bw_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        show_plot3d = True
+        plot_freq = 1
 
         tags = []
         tags_mats = []
@@ -249,22 +193,57 @@ try:
             tags.append(tag)
             tags_mats.append(tag_mat)
 
-        if show_plot3d and len(tags) > 0 and i % plot_freq == 0:
-            camera_center, corners = cam_self_projection(tags_mats)
-            camera_plotter.draw(camera_center, corners, tags)
+        if show_plot3d and len(tags) > 0 and self.frame_counter % plot_freq == 0:
+            camera_center, corners = cam_self_projection(tags, tags_mats)
+            self.camera_plotter.draw(camera_center, corners, tags)
 
-        camera_plotter.ax_image.clear()
-        camera_plotter.ax_image.set_axis_off()
-        camera_plotter.ax_image.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        # self.camera_plotter.ax_image.clear()
+        # self.camera_plotter.ax_image.set_axis_off()
+        # self.camera_plotter.ax_image.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
         plt.draw()
         plt.show(block=False)
         plt.pause(0.0001)
 
-        if cv2.waitKey(1) == ord('q'):
-            capture.release()
-            break
+        return cv2.resize(frame, (640, 480)), True
 
-        i += 1
-except KeyboardInterrupt:
-    capture.release()
+
+if __name__ == "__main__":
+    import argparse
+
+
+    def options():
+        parser = argparse.ArgumentParser()
+
+        parser.add_argument("-i", "--input",
+                            help="file name (string) or camera number (int), default camera 0",
+                            required=True,
+                            default=0)
+
+        parser.add_argument("-c", "--calibration-folder",
+                            help="camera calibration files folder",
+                            required=True)
+
+        return parser
+
+
+    args = options().parse_args()
+    input_device = args.input
+    calib_folder = args.calibration_folder
+
+    at_detector = Detector(families='tag36h11',
+                           nthreads=1,
+                           quad_decimate=1.0,
+                           quad_sigma=0.0,
+                           refine_edges=1,
+                           decode_sharpening=0.25,
+                           debug=0)
+
+    print("Calibrating camera...")
+    rms, intrinsics, dist_coeffs, rvecs, tvecs = get_camera_calibration(calib_folder)
+    print("Camera calibration done!!!")
+
+    # corners needed to show camera cone
+    corner_points = calculate_corners(intrinsics)
+    frame_processor = FrameProcessor(intrinsics, dist_coeffs, input=input_device)
+    frame_processor.play()

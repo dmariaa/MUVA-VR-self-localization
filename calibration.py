@@ -31,6 +31,7 @@ def get_corners(images: list) -> list:
     zero_zone = (-1, -1)
 
     for i, image in enumerate(images):
+        # image = cv2.resize(image, (640, 480))
         # Transform to gray and get chessboard corners
         gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         ret, chessboard_corners = cv2.findChessboardCorners(gray_image, c_size, None)
@@ -76,8 +77,7 @@ def calibrate_camera(corners, cb_points, image_shape):
     return rms, intrinsics, dist_coeffs, rvecs, tvecs
 
 
-def get_camera_calibration():
-    orig_folder = "out/calibration"
+def get_camera_calibration(orig_folder: str):
     filenames = sorted(glob.glob(os.path.join(orig_folder, "*.png")))
     images, filenames = load_images(filenames)
     corners = get_corners(images)
@@ -98,7 +98,7 @@ def get_camera_calibration():
 
 
 if __name__ == "__main__":
-    rms, intrinsics, dist_coeffs, rvecs, tvecs = get_camera_calibration()
+    rms, intrinsics, dist_coeffs, rvecs, tvecs = get_camera_calibration("out/calibration")
     print(intrinsics)
     print(rms)
 
